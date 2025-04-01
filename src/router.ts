@@ -1,16 +1,9 @@
 const debug = require('debug')('dota2-user:router');
 
 import { ExtendedEventEmitter, TypedEmitter, getProtobufForMessage } from './utils';
-import { GCEvents as BaseGCEvents, GCProtobufs } from './protobufs/protobuf-mappings';
+import { GCEvents, GCProtobufs } from './protobufs/protobuf-mappings';
 
-// Extend the base interface to add the job event and dynamic event support
-export interface GCEvents extends BaseGCEvents {
-    job: (jobId: number, payload: Buffer) => void;
-    message: (msgType: number, payload: Buffer) => void;
-    [key: string]: (...args: any[]) => void;
-}
-
-export class Router extends (ExtendedEventEmitter as unknown as new () => TypedEmitter<GCEvents>) {
+export class Router extends (ExtendedEventEmitter as new () => TypedEmitter<GCEvents>) {
     route(messageId: number, body: Buffer): void {
         // let msgName = getMessageName(msgType) || msgType;
         // TODO when we import all the protos, find message name instead of printing just the messageId
@@ -26,8 +19,5 @@ export class Router extends (ExtendedEventEmitter as unknown as new () => TypedE
         const data = protobuf.decode(body);
         debug('Routing GC message: %s', messageId);
         this.emit(messageId as keyof GCEvents, data as any);
-
-        // Also emit a generic message event that includes the messageId
-        this.emit('message', messageId, body);
     }
 }

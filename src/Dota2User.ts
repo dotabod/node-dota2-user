@@ -1,9 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { clearTimeout } from 'node:timers';
 
-// Use import for ByteBuffer instead of type import
 import ByteBuffer from 'bytebuffer';
-import type SteamUser from 'steam-user';
+import SteamUser from 'steam-user';
 const debug = require('debug')('dota2-user');
 
 import { Router } from './router';
@@ -26,8 +25,6 @@ export class Dota2User extends EventEmitter {
     _inDota2 = false;
     _helloTimer: NodeJS.Timeout | undefined | null;
     _helloTimerMs?: number | undefined;
-    _nextJobId = 1;
-    _jobs = new Map<number, (payload: Buffer) => void>();
 
     constructor(steam: SteamUser) {
         if (steam.packageName !== 'steam-user' || !('packageVersion' in steam) || !steam.constructor) {
@@ -76,36 +73,12 @@ export class Dota2User extends EventEmitter {
                 this._connect(); // Try to reconnect
             }
         });
-
-        // Handle job responses
-        this.router.on('job', (jobId, payload) => {
-            const callback = this._jobs.get(jobId);
-            if (callback) {
-                callback(payload);
-                this._jobs.delete(jobId);
-            }
-        });
     }
     _hookSteamUserEvents() {
         this._steam.on('receivedFromGC', (appid, msgType, payload) => {
             if (appid !== Dota2User.STEAM_APPID) {
                 return; // we don't care
             }
-
-            // Extract job_id if present in the header
-            let jobId = null;
-            if (payload.readUInt32LE && payload.length >= 18) {
-                // Most GC messages have a header with job_id at offset 10
-                jobId = payload.readUInt32LE(10);
-                if (jobId === 0xffffffff) {
-                    jobId = null;
-                }
-            }
-
-            if (jobId && this._jobs.has(jobId)) {
-                this.router.emit('job', jobId, payload);
-            }
-
             this.router.route(msgType, payload);
         });
 
@@ -143,7 +116,7 @@ export class Dota2User extends EventEmitter {
             throw new Dota2UserError(`Unable to find protobuf for message: ${messageId}`);
         }
         const buffer = Buffer.from(protobuf.encode(body as any).finish());
-        this.sendRawBuffer(messageId, buffer);
+        return this.sendRawBuffer(messageId, buffer);
     }
 
     // send a partial message, where all payload properties are optional, and missing values are filled in best effort
@@ -153,31 +126,7 @@ export class Dota2User extends EventEmitter {
             throw new Dota2UserError(`Unable to find protobuf for message: ${messageId}`);
         }
         const buffer = Buffer.from(protobuf.encode(protobuf.fromPartial(body) as any).finish());
-        this.sendRawBuffer(messageId, buffer);
-    }
-
-    sendWithCallback<T extends keyof ClientProtobufsType, R = Buffer>(messageId: T, body: DeepPartial<ClientProtobufsType[T]>, responseCallback: (response: R) => void): void {
-        const jobId = this._getNextJobId();
-        this._jobs.set(jobId, responseCallback as (payload: Buffer) => void);
-
-        // Create a buffer and set the job_id in the header
-        const protobuf = getProtobufForMessage(messageId);
-        if (!protobuf) {
-            throw new Dota2UserError(`Unable to find protobuf for message: ${messageId}`);
-        }
-
-        // Encode the message
-        const messageBuffer = Buffer.from(protobuf.encode(protobuf.fromPartial(body) as any).finish());
-
-        // Create a header with job_id
-        const headerBuffer = Buffer.alloc(18);
-        headerBuffer.writeUInt32LE(jobId, 10); // Set job_id at offset 10
-
-        // Combine header and message
-        const finalBuffer = Buffer.concat([headerBuffer, messageBuffer.slice(18)]);
-
-        debug(`Sending GC message ${messageId} with job_id ${jobId}`);
-        this._steam.sendToGC(Dota2User.STEAM_APPID, messageId, {}, finalBuffer);
+        return this.sendRawBuffer(messageId, buffer);
     }
 
     sendRawBuffer(messageId: number, body: Buffer | ByteBuffer): void {
@@ -186,12 +135,11 @@ export class Dota2User extends EventEmitter {
         }
         debug('Sending GC message %s', messageId);
         // Convert ByteBuffer to Buffer
-        let buffer = body;
         if (body instanceof ByteBuffer) {
-            buffer = body.flip().toBuffer();
+            body = body.flip().toBuffer();
         }
         // TODO: not setting a callback, not sure how it functions
-        this._steam.sendToGC(Dota2User.STEAM_APPID, messageId, {}, buffer);
+        this._steam.sendToGC(Dota2User.STEAM_APPID, messageId, {}, body);
     }
 
     _connect(): void {
@@ -231,15 +179,7 @@ export class Dota2User extends EventEmitter {
         if (this._helloTimer) {
             clearTimeout(this._helloTimer);
             this._helloTimer = null;
-            this._helloTimerMs = undefined;
+            delete this._helloTimerMs;
         }
-    }
-
-    _getNextJobId(): number {
-        const jobId = this._nextJobId++;
-        if (this._nextJobId >= 0x10000) {
-            this._nextJobId = 1;
-        }
-        return jobId;
     }
 }
